@@ -1,0 +1,188 @@
+import torch
+import torch.nn.functional as F
+import torch.nn as nn
+import torch.optim as optim
+from torch_geometric.datasets import Planetoid, Amazon
+from torch_geometric.nn import GATConv, TransformerConv
+from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
+import matplotlib.pyplot as plt
+from sklearn.metrics import accuracy_score
+import numpy as np
+
+
+# Load the Cora dataset
+#dataset = Planetoid(root='/tmp/Cora', name='Cora')
+#dataset = Planetoid(root='/tmp/PubMed', name='PubMed')
+dataset = Planetoid(root='/tmp/Cora', name='Cora')
+data = dataset[0]
+
+# Define the Disentangle Layer
+class DisentangleLayer(nn.Module):
+    def __init__(self, input_dim, disentangled_dim, num_components):
+        super(DisentangleLayer, self).__init__()
+        self.input_dim = input_dim
+        self.disentangled_dim = disentangled_dim
+        self.num_components = num_components
+        self.fc = nn.Linear(input_dim, disentangled_dim * num_components)
+
+    def forward(self, x):
+        # Reshape the output to (batch_size, num_components, disentangled_dim)
+        x = self.fc(x)
+        x = x.view(-1, self.num_components, self.disentangled_dim)
+        return x
+
+# Standard GAT Model with Disentanglement
+class GATStandardWithDisentanglement(torch.nn.Module):
+    def __init__(self, num_features, hidden_channels, out_channels, disentangled_dim, num_components, heads=1):
+        super(GATStandardWithDisentanglement, self).__init__()
+        self.conv1 = GATConv(num_features, hidden_channels, heads=heads, dropout=0.6)
+        self.conv2 = GATConv(hidden_channels * heads, hidden_channels, heads=1, concat=False, dropout=0.6)
+        self.disentangle = DisentangleLayer(hidden_channels, disentangled_dim, num_components)
+        self.fc = nn.Linear(disentangled_dim * num_components, out_channels)
+
+    def forward(self, data):
+        x, edge_index = data.x, data.edge_index
+        x = F.dropout(x, p=0.6, training=self.training)
+        x = self.conv1(x, edge_index)
+        x = F.elu(x)
+        x = F.dropout(x, p=0.6, training=self.training)
+        x = self.conv2(x, edge_index)
+        x = F.elu(x)
+        x = self.disentangle(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        return F.log_softmax(x, dim=1)
+
+# GAT Transformer Model with Disentanglement
+class GATTransformerWithDisentanglement(torch.nn.Module):
+    def __init__(self, num_features, hidden_channels, out_channels, disentangled_dim, num_components, heads=1):
+        super(GATTransformerWithDisentanglement, self).__init__()
+        self.conv1 = GATConv(num_features, hidden_channels, heads=heads, dropout=0.6)
+        self.transformer = TransformerConv(hidden_channels * heads, hidden_channels, heads=8)
+        self.conv2 = GATConv(hidden_channels * 8, hidden_channels, heads=1, concat=False, dropout=0.6)
+        self.disentangle = DisentangleLayer(hidden_channels, disentangled_dim, num_components)
+        self.fc = nn.Linear(disentangled_dim * num_components, out_channels)
+
+    def forward(self, data):
+        x, edge_index = data.x, data.edge_index
+        x = F.dropout(x, p=0.6, training=self.training)
+        x = self.conv1(x, edge_index)
+        x = F.elu(x)
+        x = self.transformer(x, edge_index)
+        x = F.elu(x)
+        x = F.dropout(x, p=0.6, training=self.training)
+        x = self.conv2(x, edge_index)
+        x = F.elu(x)
+        x = self.disentangle(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x)
+        return F.log_softmax(x, dim=1)
+
+# Training function
+def train(model, optimizer):
+    model.train()
+    optimizer.zero_grad()
+    out = model(data)
+    # Calculate the negative log likelihood loss
+    loss = F.nll_loss(out[data.train_mask], data.y[data.train_mask])
+    loss.backward()
+    optimizer.step()
+    return loss.item()
+
+# Evaluation function
+def test(model):
+    model.eval()
+    logits, accs = model(data), []
+    for _, mask in data('train_mask', 'val_mask', 'test_mask'):
+        pred = logits[mask].max(1)[1]
+        # Calculate accuracy
+        acc = accuracy_score(data.y[mask].cpu(), pred.cpu())
+        accs.append(acc)
+    return accs
+
+# Prepare device and models
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+model_standard = GATStandardWithDisentanglement(dataset.num_features, 8, dataset.num_classes, 4, 2).to(device)
+model_transformer = GATTransformerWithDisentanglement(dataset.num_features, 8, dataset.num_classes, 4, 2).to(device)
+data = data.to(device)
+optimizer_standard = torch.optim.Adam(model_standard.parameters(), lr=0.005, weight_decay=0.001)
+optimizer_transformer = torch.optim.Adam(model_transformer.parameters(), lr=0.005, weight_decay=0.001)
+
+# Variables to store losses and accuracies
+losses_standard, train_accs_standard, val_accs_standard, test_accs_standard = [], [], [], []
+losses_transformer, train_accs_transformer, val_accs_transformer, test_accs_transformer = [], [], [], []
+
+# Train the standard GAT model with disentanglement
+for epoch in range(200):
+    loss = train(model_standard, optimizer_standard)
+    accs = test(model_standard)
+    losses_standard.append(loss)
+    train_accs_standard.append(accs[0])
+    val_accs_standard.append(accs[1])
+    test_accs_standard.append(accs[2])
+    print(f'[GAT Standard with Disentanglement] Epoch: {epoch}, Loss: {loss:.4f}, Train: {accs[0]:.4f}, Val: {accs[1]:.4f}, Test: {accs[2]:.4f}')
+
+# Train the GAT model with transformers and disentanglement
+for epoch in range(200):
+    loss = train(model_transformer, optimizer_transformer)
+    accs = test(model_transformer)
+    losses_transformer.append(loss)
+    train_accs_transformer.append(accs[0])
+    val_accs_transformer.append(accs[1])
+    test_accs_transformer.append(accs[2])
+    print(f'[GAT Transformer with Disentanglement] Epoch: {epoch}, Loss: {loss:.4f}, Train: {accs[0]:.4f}, Val: {accs[1]:.4f}, Test: {accs[2]:.4f}')
+
+# Visualization of embeddings using t-SNE and PCA
+def visualize_embeddings(embeddings, labels, title, method='tsne'):
+    if method == 'tsne':
+        reducer = TSNE(n_components=2, perplexity=30, n_iter=3000)
+    else:
+        reducer = PCA(n_components=2)
+    reduced_embeddings = reducer.fit_transform(embeddings)
+    plt.figure(figsize=(10, 6))
+    plt.scatter(reduced_embeddings[:, 0], reduced_embeddings[:, 1], c=labels, cmap='viridis')
+    plt.colorbar()
+    plt.title(title)
+    plt.show()
+
+# Visualize embeddings of the standard GAT model with disentanglement using t-SNE and PCA
+model_standard.eval()
+with torch.no_grad():
+    embeddings_standard = model_standard(data).cpu().numpy()
+visualize_embeddings(embeddings_standard, data.y.cpu().numpy(), title='GAT Standard with Disentanglement - t-SNE', method='tsne')
+visualize_embeddings(embeddings_standard, data.y.cpu().numpy(), title='GAT Standard with Disentanglement - PCA', method='pca')
+
+# Visualize embeddings of the GAT model with transformers and disentanglement using t-SNE and PCA
+model_transformer.eval()
+with torch.no_grad():
+    embeddings_transformer = model_transformer(data).cpu().numpy()
+visualize_embeddings(embeddings_transformer, data.y.cpu().numpy(), title='GAT with Transformer and Disentanglement - t-SNE', method='tsne')
+visualize_embeddings(embeddings_transformer, data.y.cpu().numpy(), title='GAT with Transformer and Disentanglement - PCA', method='pca')
+
+# Plot losses and accuracies over epochs
+epochs = range(200)
+plt.figure(figsize=(14, 5))
+
+# Plot training loss
+plt.subplot(1, 2, 1)
+plt.plot(epochs, losses_standard, label='GAT Standard with Disentanglement')
+plt.plot(epochs, losses_transformer, label='GAT Transformer with Disentanglement')
+plt.xlabel('Epochs')
+plt.ylabel('Loss')
+plt.legend()
+plt.title('Training Loss')
+
+# Plot accuracies
+plt.subplot(1, 2, 2)
+plt.plot(epochs, train_accs_standard, label='Train Acc - GAT Standard with Disentanglement')
+plt.plot(epochs, val_accs_standard, label='Val Acc - GAT Standard with Disentanglement')
+plt.plot(epochs, test_accs_standard, label='Test Acc - GAT Standard with Disentanglement')
+plt.plot(epochs, train_accs_transformer, label='Train Acc - GAT Transformer with Disentanglement')
+plt.plot(epochs, val_accs_transformer, label='Val Acc - GAT Transformer with Disentanglement')
+plt.plot(epochs, test_accs_transformer, label='Test Acc - GAT Transformer with Disentanglement')
+plt.xlabel('Epochs')
+plt.ylabel('Accuracy')
+plt.legend()
+plt.title('Accuracy')
+plt.show()
