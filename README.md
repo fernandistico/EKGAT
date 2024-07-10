@@ -54,11 +54,4 @@ Acknowledgments
 This research was funded in part by NSF grant number CCF-2109988.
 
 References
-
-Velickovic, P., et al. "Graph Attention Networks." arXiv:1710.10903
-
-Ying, Z., et al. "Transformers in Graph Representation Learning." arXiv:2107.00154
-
-Wu, Z., et al. "A Comprehensive Survey on Graph Neural Networks." arXiv:1901.00596
-
-Liu, Q., et al. "Disentangling representations in knowledge graphs." arXiv:2006.07127
+>>Paper under peer review
