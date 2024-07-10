@@ -4,13 +4,21 @@ Overview
 This repository contains the implementation of Enhanced Knowledge Graph Attention Networks (EKGAT) designed to improve representation learning for graph-structured data. The model integrates TransformerConv layers and disentanglement learning techniques to enhance node classification accuracy and convergence speed. Experiments have been conducted on the Cora, PubMed, and Amazon datasets, demonstrating substantial improvements over traditional KGAT models.
 
 Requirements
+
 Python 3.10.8
+
 PyTorch 1.10.1
+
 PyTorch Geometric
+
 scikit-learn
+
 numpy
+
 matplotlib
+
 psutil
+
 
 Datasets
 The experiments are conducted on the following datasets:
